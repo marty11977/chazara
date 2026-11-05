@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chazara</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="A private player for shiurim and lectures: pitch-preserving speed, A-B looping, and saved progress.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Chazara">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="format-detection" content="telephone=no">
+<meta id="themeColor" name="theme-color" content="#ffffff">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<audio id="audio" playsinline webkit-playsinline preload="auto"></audio>
+<input id="filePicker" class="vh" type="file" multiple aria-label="Choose audio files" tabindex="-1">
+
+<main id="library" class="screen">
+  <header class="lib-head">
+    <div class="lib-top">
+      <button class="icon-btn" data-act="settings" aria-label="Settings and help"><svg class="i"><use href="#i-gear"/></svg></button>
+      <button class="add-btn" data-act="add"><svg class="i"><use href="#i-plus"/></svg>Add shiur</button>
+    </div>
+    <h1 id="libTitle">Shiurim</h1>
+    <div class="seg" role="tablist" aria-label="Library view">
+      <button role="tab" id="segAll" data-act="view-all" aria-selected="true">All shiurim</button>
+      <button role="tab" id="segPl" data-act="view-playlists" aria-selected="false">Playlists</button>
+    </div>
+    <div class="filters" id="filters">
+      <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Search by title" aria-label="Search by title" autocomplete="off" autocorrect="off"></label>
+      <label class="sort"><span class="vh">Sort by</span>
+        <select id="sort" aria-label="Sort by">
+          <option value="played">Recently played</option>
+          <option value="added">Date added</option>
+          <option value="duration">Duration</option>
+        </select>
+      </label>
+    </div>
+  </header>
+  <div id="installTip" class="tip" hidden>
+    <p><strong>Add Chazara to your Home Screen before importing.</strong> Safari and the Home Screen app keep separate libraries.</p>
+    <div class="tip-row"><button class="link" data-act="install-help">Show me how</button><button class="link quiet" data-act="install-dismiss">Not now</button></div>
+  </div>
+  <div id="list" class="list"></div>
+</main>
+
+<button id="mini" class="mini" data-act="open-player" hidden>
+  <span class="mini-bar"><span id="miniFill"></span></span>
+  <span class="mini-body">
+    <span class="mini-text"><span id="miniTitle" dir="auto"></span><span id="miniTime"></span></span>
+    <span class="mini-speed" id="miniSpeed"></span>
+    <span class="mini-play" role="button" tabindex="0" data-act="toggle" aria-label="Play or pause"><svg class="i"><use id="miniIcon" href="#i-play"/></svg></span>
+  </span>
+</button>
+
+<section id="player" class="player" aria-label="Now playing" aria-hidden="true">
+  <div class="p-inner">
+    <header class="p-top" id="pTop">
+      <button class="icon-btn" data-act="close-player" aria-label="Back to library"><svg class="i"><use href="#i-down"/></svg></button>
+      <span class="grabber" aria-hidden="true"></span>
+      <button class="icon-btn" data-act="track-menu-current" aria-label="Shiur options"><svg class="i"><use href="#i-more"/></svg></button>
+    </header>
+
+    <div class="p-title-wrap">
+      <h2 id="pTitle" dir="auto"></h2>
+      <p id="pSub"></p>
+      <p id="pError" class="error" role="alert" hidden></p>
+    </div>
+
+    <div class="timeline-wrap">
+      <div class="times">
+        <button id="elapsed" class="elapsed" data-act="goto" aria-label="Go to a time">0:00</button>
+        <span id="remain" class="remain">-0:00</span>
+      </div>
+      <div id="tl" class="tl" role="slider" tabindex="0" aria-label="Position in shiur" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+        <div class="tl-track"><div id="tlLoop" class="tl-loop" hidden></div><div id="tlFill" class="tl-fill"></div></div>
+        <div id="tlThumb" class="tl-thumb"></div>
+        <div id="tlTicks" class="tl-ticks" aria-hidden="true"></div>
+        <div id="flagA" class="flag" data-flag="a" hidden>A</div>
+        <div id="flagB" class="flag" data-flag="b" hidden>B</div>
+      </div>
+      <p id="scrubHint" class="scrub-hint" aria-live="polite">Drag down while scrubbing for finer control</p>
+    </div>
+
+    <div class="transport">
+      <button class="skip s15" data-skip="-15" aria-label="Rewind 15 seconds"><svg class="i"><use href="#i-back"/></svg><b>15</b></button>
+      <button class="skip s10" data-skip="-10" aria-label="Rewind 10 seconds"><svg class="i"><use href="#i-back"/></svg><b>10</b></button>
+      <button class="skip s5" data-skip="-5" aria-label="Rewind 5 seconds"><svg class="i"><use href="#i-back"/></svg><b>5</b></button>
+      <button id="playBtn" class="play" data-act="toggle" aria-label="Play"><svg class="i"><use id="playIcon" href="#i-play"/></svg></button>
+      <button class="skip s5" data-skip="5" aria-label="Forward 5 seconds"><svg class="i"><use href="#i-fwd"/></svg><b>5</b></button>
+      <button class="skip s10" data-skip="10" aria-label="Forward 10 seconds"><svg class="i"><use href="#i-fwd"/></svg><b>10</b></button>
+      <button class="skip s15" data-skip="15" aria-label="Forward 15 seconds"><svg class="i"><use href="#i-fwd"/></svg><b>15</b></button>
+    </div>
+
+    <div class="speed">
+      <div class="speed-head">
+        <button class="round" data-act="speed-down" aria-label="Slower"><svg class="i"><use href="#i-minus"/></svg></button>
+        <output id="speedVal" for="speedRange" aria-live="polite">1.0×</output>
+        <button class="round" data-act="speed-up" aria-label="Faster"><svg class="i"><use href="#i-plus"/></svg></button>
+      </div>
+      <input id="speedRange" type="range" min="0" max="19" step="1" value="5" aria-label="Playback speed">
+      <div class="chips" id="chips" role="group" aria-label="Common speeds"></div>
+    </div>
+
+    <div class="loop" aria-label="Section repeat">
+      <div class="ab">
+        <div class="ab-cell" id="cellA">
+          <button class="nudge" data-nudge="a:-0.5" aria-label="Move A back half a second"><svg class="i"><use href="#i-minus"/></svg></button>
+          <button class="ab-set" data-act="set-a"><b>A</b><span id="timeA">Set start</span></button>
+          <button class="nudge" data-nudge="a:0.5" aria-label="Move A forward half a second"><svg class="i"><use href="#i-plus"/></svg></button>
+        </div>
+        <div class="ab-cell" id="cellB">
+          <button class="nudge" data-nudge="b:-0.5" aria-label="Move B back half a second"><svg class="i"><use href="#i-minus"/></svg></button>
+          <button class="ab-set" data-act="set-b"><b>B</b><span id="timeB">Set end</span></button>
+          <button class="nudge" data-nudge="b:0.5" aria-label="Move B forward half a second"><svg class="i"><use href="#i-plus"/></svg></button>
+        </div>
+      </div>
+      <div class="loop-state" id="loopState" hidden>
+        <span id="loopLabel"></span>
+        <button class="link quiet" data-act="clear-loop">Clear</button>
+        <label class="switch"><input id="loopToggle" type="checkbox" aria-label="Repeat this section"><i></i></label>
+      </div>
+    </div>
+
+    <div class="tools">
+      <button class="tool" id="repeatBtn" data-act="repeat" aria-pressed="false"><svg class="i"><use href="#i-repeat"/></svg><span>Repeat shiur</span></button>
+      <button class="tool" id="sleepBtn" data-act="sleep"><svg class="i"><use href="#i-moon"/></svg><span id="sleepLabel">Sleep timer</span></button>
+      <button class="tool" data-act="volume"><svg class="i"><use href="#i-volume"/></svg><span>Volume</span></button>
+    </div>
+  </div>
+</section>
+
+<div id="scrim" class="scrim" hidden></div>
+<div id="sheet" class="sheet" role="dialog" aria-modal="true" hidden></div>
+<div id="drop" class="drop" hidden><p>Drop audio files to add them</p></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M7.6 4.2c0-1 1.1-1.6 1.9-1.1l11.2 7.8c.8.5.8 1.7 0 2.2L9.5 20.9c-.8.5-1.9-.1-1.9-1.1z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect fill="currentColor" stroke="none" x="5.5" y="3.5" width="4.8" height="17" rx="1.4"/><rect fill="currentColor" stroke="none" x="13.7" y="3.5" width="4.8" height="17" rx="1.4"/></symbol>
+    <symbol id="i-back" viewBox="0 0 32 32"><path d="M8.2 9.3A11.5 11.5 0 1 1 4.5 17.8"/><path d="M13.4 3.8 7.9 9.2l5.5 4.2"/></symbol>
+    <symbol id="i-fwd" viewBox="0 0 32 32"><path d="M23.8 9.3a11.5 11.5 0 1 0 3.7 8.5"/><path d="m18.6 3.8 5.5 5.4-5.5 4.2"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="m5 9 7 7 7-7"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle fill="currentColor" stroke="none" cx="5" cy="12" r="1.8"/><circle fill="currentColor" stroke="none" cx="12" cy="12" r="1.8"/><circle fill="currentColor" stroke="none" cx="19" cy="12" r="1.8"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2.2"/><circle cx="8" cy="17" r="2.2"/></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M4 11V9.5A3.5 3.5 0 0 1 7.5 6H20"/><path d="m16.5 2.5 3.5 3.5-3.5 3.5"/><path d="M20 13v1.5a3.5 3.5 0 0 1-3.5 3.5H4"/><path d="M7.5 21.5 4 18l3.5-3.5"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.2A8.5 8.5 0 0 1 9.8 4a8.5 8.5 0 1 0 10.2 10.2z"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5z"/><path d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.8 7.8 0 0 1 0 11"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M4 6.5h16M4 12h16M4 17.5h9"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="m5 15 7-7 7 7"/></symbol>
+  </defs>
+</svg>
+<script src="app.js"></script>
+</body>
+</html>
