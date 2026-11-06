@@ -237,13 +237,13 @@ async function importFiles(fileList) {
       const id = uid();
       const duration = await probeDuration(blob);
       const track = { id, title: cleanTitle(f.name), fileName: f.name, size: f.size, type: blob.type, duration, addedAt: Date.now(), lastPlayedAt: 0, position: 0, finished: false, a: null, b: null, loopOn: false, updatedAt: Date.now() };
-      await put('blobs', { id, blob });
+      await saveAudio(id, blob);
       await put('tracks', track);
       S.tracks.push(track);
       firstId = firstId || id;
       added++;
     } catch (e) {
-      const full = e && (e.name === 'QuotaExceededError' || /quota/i.test(e.message || ''));
+      const full = isQuota(e);
       failures.push(full ? `${f.name} does not fit: free up iPhone storage and try again` : `${f.name} could not be saved`);
     }
   }
@@ -252,6 +252,23 @@ async function importFiles(fileList) {
   else if (skipped && !added) toast('Already in your library. Opening it.');
   else hideToast();
   if (firstId) { await loadTrack(firstId, { autoplay: true }); openPlayer(); }
+}
+/* Some iPhone in-app browsers refuse to store audio files in the database but accept
+   raw bytes, so a failed save is retried as bytes. A full phone is reported, not retried. */
+const isQuota = e => e && (e.name === 'QuotaExceededError' || /quota/i.test(e.message || ''));
+async function saveAudio(id, blob) {
+  try {
+    await put('blobs', { id, blob });
+  } catch (e) {
+    if (isQuota(e)) throw e;
+    await put('blobs', { id, buf: await blob.arrayBuffer(), type: blob.type });
+  }
+}
+function storedBlob(rec) {
+  if (!rec) return null;
+  if (rec.blob) return rec.blob;
+  if (rec.buf) return new Blob([rec.buf], { type: rec.type || 'audio/mpeg' });
+  return null;
 }
 function requestPersistence() {
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) { /* optional */ }
@@ -285,13 +302,14 @@ async function loadTrack(id, { autoplay = false, fromStart = false, queue } = {}
   S.wantPlay = autoplay;
   let rec;
   try { rec = await get('blobs', id); } catch (e) { rec = null; }
-  if (!rec || !rec.blob) {
+  const audioBlob = storedBlob(rec);
+  if (!audioBlob) {
     showTrackError(t, 'This audio is no longer saved on this device. Delete it and add the file again.');
     return;
   }
   stopPriming();
   if (S.url) URL.revokeObjectURL(S.url);
-  S.url = URL.createObjectURL(rec.blob);
+  S.url = URL.createObjectURL(audioBlob);
   S.cur = t;
   S.loadErr = null;
   const atEnd = t.finished || (t.duration && t.position >= t.duration - 2);
@@ -1299,6 +1317,7 @@ async function boot() {
   if (last && S.tracks.some(t => t.id === last)) {
     S.queue = S.settings.lastQueue || null;
     await loadTrack(last, { autoplay: false });
+    if (S.cur) openPlayer();
   }
   if (S.tracks.length) requestPersistence();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
