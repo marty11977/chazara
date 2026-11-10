@@ -14,9 +14,9 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 const S = {
-  tracks: [], playlists: [], settings: { speed: 1, sort: 'played', theme: 'auto', repeat: false, lastTrackId: null, lastQueue: null, volume: 1 },
+  tracks: [], playlists: [], settings: { speed: 1, sort: 'played', theme: 'auto', repeat: false, lastTrackId: null, lastQueue: null, volume: 1, keepAwake: 30 },
   cur: null, queue: null, view: 'all', playlistId: null, query: '',
-  wantPlay: false, userPaused: true, interrupted: false, sleepAt: 0, url: null, pendingSeek: null,
+  wantPlay: false, userPaused: true, interrupted: false, soft: null, pausedAt: 0, sleepAt: 0, url: null, pendingSeek: null,
   scrub: null, playerOpen: false, loadErr: null, sysOverride: null, rateCheck: null, rateWarned: false,
 };
 
@@ -68,7 +68,7 @@ const lsDel = k => { try { localStorage.removeItem(k); } catch (e) { /* storage 
 function savePosition(force) {
   const t = S.cur;
   if (!t || S.pendingSeek != null || S.scrub) return;
-  const p = audio.currentTime;
+  const p = S.soft ? S.soft.at : audio.currentTime;
   if (!isFinite(p)) return;
   t.position = p;
   t.updatedAt = Date.now();
@@ -341,12 +341,16 @@ function applyPendingSeek() {
   renderTimes();
 }
 async function play() {
+  if (S.soft) { softResume(); return; }
   if (!S.cur) { pickFiles(); return; }
   if (S.loadErr) return;
   S.wantPlay = true; S.userPaused = false; S.interrupted = false;
   stopPriming();
+  claimSession();
   try {
     if (audio.ended) audio.currentTime = S.cur.a != null && S.cur.loopOn ? S.cur.a : 0;
+    else if (S.pausedAt && audio.paused && S.pendingSeek == null) stepBack(Date.now() - S.pausedAt);
+    S.pausedAt = 0;
     await audio.play();
   } catch (e) {
     if (e && e.name === 'NotAllowedError') {
@@ -360,9 +364,69 @@ async function play() {
   }
 }
 function pause() {
+  endSoft();
   S.wantPlay = false; S.userPaused = true; S.interrupted = false;
+  S.pausedAt = Date.now();
   audio.pause();
   savePosition(true);
+}
+
+/* iPhone puts a web app to sleep soon after its audio stops while it is in the background,
+   and a sleeping app cannot hear the AirPods or lock-screen play command. So a pause from
+   outside the app keeps the audio running with no sound, at the paused spot, for a while. */
+function claimSession() {
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* older iOS */ }
+}
+function stepBack(gapMs) {
+  const back = gapMs >= 120000 ? 5 : gapMs >= 5000 ? 2 : 0;
+  if (!back || !S.cur) return;
+  const c = S.cur;
+  const floor = c.loopOn && c.a != null && audio.currentTime >= c.a ? c.a : 0;
+  try { audio.currentTime = Math.max(floor, audio.currentTime - back); } catch (e) { /* not seekable yet */ }
+}
+function softPause() {
+  S.soft = { at: audio.currentTime, since: Date.now() };
+  S.wantPlay = false; S.userPaused = true; S.interrupted = false;
+  audio.muted = true;
+  clearTimeout(loopTimer);
+  savePosition(true);
+  setMediaState('paused');
+  renderPlayState();
+  renderTimes();
+}
+function endSoft() {
+  const s = S.soft;
+  if (!s) return null;
+  S.soft = null;
+  try { audio.currentTime = s.at; } catch (e) { /* not seekable */ }
+  audio.muted = false;
+  return s;
+}
+function softResume() {
+  const s = endSoft();
+  if (!s) return;
+  S.wantPlay = true; S.userPaused = false; S.interrupted = false; S.pausedAt = 0;
+  stepBack(Date.now() - s.since);
+  claimSession();
+  if (audio.paused) audio.play().catch(() => { S.wantPlay = false; renderPlayState(); });
+  setMediaState('playing');
+  scheduleLoop();
+  updatePositionState();
+  renderPlayState();
+  renderTimes();
+}
+function keepSoft() {
+  const s = S.soft;
+  if (Date.now() - s.since > (S.settings.keepAwake || 0) * 60000) { pause(); return; }
+  const d = audio.duration, t = audio.currentTime;
+  if (t > s.at + 20 || (isFinite(d) && d - t < 3)) {
+    try { audio.currentTime = Math.max(0, isFinite(d) ? Math.min(s.at, d - 30) : s.at); } catch (e) { /* ignore */ }
+  }
+}
+function remotePause() {
+  if (S.soft) { softResume(); return; }
+  if (document.hidden && !audio.paused && S.settings.keepAwake > 0) { softPause(); return; }
+  pause();
 }
 const toggle = () => (audio.paused ? play() : pause());
 
@@ -389,12 +453,12 @@ const dur = () => {
   if (isFinite(audio.duration) && audio.duration > 0 && S.cur && audio.src) return audio.duration;
   return (S.cur && S.cur.duration) || 0;
 };
-const now = () => (S.pendingSeek != null ? S.pendingSeek : audio.currentTime || 0);
+const now = () => (S.soft ? S.soft.at : S.pendingSeek != null ? S.pendingSeek : audio.currentTime || 0);
 
 /* Loop and sleep checks run from several clocks because iOS throttles timers when locked. */
 function enforce() {
   const c = S.cur;
-  if (c && c.loopOn && c.a != null && c.b != null && !audio.paused && !audio.seeking) {
+  if (c && c.loopOn && c.a != null && c.b != null && !audio.paused && !audio.seeking && !S.soft) {
     if (audio.currentTime >= c.b - 0.02 * audio.playbackRate) {
       audio.currentTime = c.a;
       scheduleLoop();
@@ -442,6 +506,7 @@ function checkEffectiveRate() {
 function afterEnd() {
   const c = S.cur;
   if (!c) return;
+  if (S.soft) { audio.currentTime = Math.max(0, S.soft.at - 30); audio.play().catch(() => {}); return; }
   if (c.loopOn && c.a != null) { audio.currentTime = c.a; audio.play().catch(() => {}); return; }
   if (S.settings.repeat) { audio.currentTime = 0; audio.play().catch(() => {}); return; }
   c.finished = true;
@@ -527,6 +592,8 @@ audio.addEventListener('play', () => { if (!priming) { setMediaState('playing');
 audio.addEventListener('pause', () => {
   clearTimeout(loopTimer);
   if (priming || audio.src === SILENT || audio.ended) return;
+  /* Another app or a call took the sound while silently paused: settle at the paused spot. */
+  if (S.soft) { endSoft(); S.pausedAt = Date.now(); }
   /* A pause we did not ask for: a phone call, Siri, another app, or headphones removed. */
   if (S.wantPlay && !S.userPaused) { S.interrupted = true; S.wantPlay = false; }
   setMediaState('paused');
@@ -536,6 +603,7 @@ audio.addEventListener('pause', () => {
 });
 audio.addEventListener('timeupdate', () => {
   if (priming || audio.src === SILENT) return;
+  if (S.soft) { keepSoft(); return; }
   enforce();
   checkEffectiveRate();
   savePosition();
@@ -595,11 +663,16 @@ function updatePositionState() {
   if (!isFinite(d) || d <= 0) return;
   try { navigator.mediaSession.setPositionState({ duration: d, playbackRate: audio.playbackRate || 1, position: clamp(audio.currentTime, 0, d) }); } catch (e) { /* optional */ }
 }
+const remote = {};
 if ('mediaSession' in navigator) {
   const on = (a, h) => { try { navigator.mediaSession.setActionHandler(a, h); } catch (e) { /* unsupported action */ } };
   on('play', () => play());
-  on('pause', () => pause());
+  on('pause', () => remotePause());
   on('stop', () => pause());
+  /* AirPods: double-press jumps ahead 15 seconds, triple-press replays the last 15. */
+  on('nexttrack', () => { if (S.soft) softResume(); seekTo(now() + 15); });
+  on('previoustrack', () => { if (S.soft) softResume(); seekTo(now() - 15); });
+  remote.pause = remotePause; remote.play = () => play(); remote.next = () => { if (S.soft) softResume(); seekTo(now() + 15); };
   on('seekbackward', d => seekTo(now() - ((d && d.seekOffset) || 15)));
   on('seekforward', d => seekTo(now() + ((d && d.seekOffset) || 15)));
   on('seekto', d => { if (d && d.seekTime != null) seekTo(d.seekTime); });
@@ -654,7 +727,7 @@ function clearLoop() {
 /* ---------- Render: player ---------- */
 function setUse(el, id) { if (el) el.setAttribute('href', '#' + id); }
 function renderPlayState() {
-  const playing = !audio.paused && !priming;
+  const playing = !audio.paused && !priming && !S.soft;
   setUse($('playIcon'), playing ? 'i-pause' : 'i-play');
   setUse($('miniIcon'), playing ? 'i-pause' : 'i-play');
   $('playBtn').setAttribute('aria-label', playing ? 'Pause' : 'Play');
@@ -1033,14 +1106,26 @@ async function settingsSheet() {
   const th = S.settings.theme;
   const sh = openSheet(`<h2>Settings</h2>
     <div class="grid-opts">${[['auto', 'Automatic'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => `<button class="opt" data-theme-opt="${v}" aria-pressed="${th === v}">${l}</button>`).join('')}</div>
+    <h3 class="set-h">Keep AirPods ready after pausing</h3>
+    <p>When you pause from your AirPods or lock screen, Chazara stays awake so play works. It uses some battery.</p>
+    <div class="grid-opts four">${[[0, 'Off'], [15, '15 min'], [30, '30 min'], [60, '1 hour']].map(([v, l]) => `<button class="opt" data-keep="${v}" aria-pressed="${S.settings.keepAwake === v}">${l}</button>`).join('')}</div>
     <p>${S.tracks.length} ${S.tracks.length === 1 ? 'shiur' : 'shiurim'} saved${used ? '. ' + esc(used) : ''}.</p>
     <div class="help">
       <h3>Add audio from WhatsApp</h3>
       <ol><li>Press and hold the audio in WhatsApp, tap Forward, then the Share icon.</li><li>Choose Save to Files.</li><li>In Chazara, tap Add shiur, then Choose Files.</li></ol>
       <h3>What an iPhone web app cannot do</h3>
-      <ul><li>Apple does not let web apps appear in the iPhone share sheet, so WhatsApp cannot send straight to Chazara.</li><li>The volume slider is replaced by the iPhone side buttons.</li><li>Deleting Chazara from your Home Screen deletes its saved audio.</li></ul>
+      <ul><li>Apple does not let web apps appear in the iPhone share sheet, so WhatsApp cannot send straight to Chazara.</li><li>The volume slider is replaced by the iPhone side buttons.</li><li>Deleting Chazara from your Home Screen deletes its saved audio.</li><li>After a pause from your AirPods, the lock screen may still show a pause symbol. Press it once to keep listening.</li></ul>
+      <h3>AirPods</h3>
+      <ul><li>Press once to pause or play.</li><li>Double-press to jump ahead 15 seconds.</li><li>Triple-press to hear the last 15 seconds again.</li></ul>
     </div>
     <button class="wide-btn sec" data-act="sheet-close">Done</button>`);
+  sh.querySelectorAll('[data-keep]').forEach(b => {
+    b.onclick = () => {
+      S.settings.keepAwake = +b.dataset.keep;
+      saveSettings();
+      sh.querySelectorAll('[data-keep]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    };
+  });
   sh.querySelectorAll('[data-theme-opt]').forEach(b => {
     b.onclick = () => {
       S.settings.theme = b.dataset.themeOpt;
@@ -1281,7 +1366,7 @@ window.addEventListener('keydown', e => {
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) savePosition(true);
-  else { renderPlayer(); if (S.playerOpen) requestAnimationFrame(frame); }
+  else { if (S.soft) pause(); renderPlayer(); if (S.playerOpen) requestAnimationFrame(frame); }
 });
 window.addEventListener('pagehide', () => savePosition(true));
 
@@ -1324,5 +1409,5 @@ async function boot() {
     navigator.serviceWorker.register('sw.js').catch(() => { /* app still works online */ });
   }
 }
-window.__chazara = { S, audio };
+window.__chazara = { S, audio, remote };
 boot();
